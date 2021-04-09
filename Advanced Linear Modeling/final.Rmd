@@ -1,0 +1,521 @@
+---
+title: "Final"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(faraway)
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(lattice)
+library(RLRsim)
+library(pbkrtest)
+library(ggplot2)
+library(MASS)
+library(geepack)
+library(INLA)
+```
+
+##Question 1
+1. A "round robin" study is one where the same experiment is performed by a number of different labs, in order to assess how well the different labs are able to reproduce each others' work. As part of such a study, seven labs are asked to conduct tensile strength measurements on samples of steel wire. In total, 44 such measurements are made. The file RoundRobin.csv contains the raw data, which are summarize in Table 1.
+*similar to pulp example from chp. 10*
+```{r}
+rr=read.csv('/Users/SylviaSzarka/Desktop/School/STOR 590/FINAL/RoundRobin.csv')
+```
+
+(a) Fit a simple linear regression model with Strength as the response and Lab as a predictor. Is the Lab effect statistically significant? [3 points]
+
+```{r}
+op <- options(contrasts=c("contr.sum","contr.poly"))
+options(op)
+#Treats Lab as factor variable
+slr<-lm(Strength~Lab,rr)
+summary(slr)
+#Analysis of variance table
+amod<-aov(Strength~Lab,rr)
+summary(amod)
+#P-value of 0.0536-> we fail to reject the Null hypothesis that there is no regression effect, meaning that there is no lab effect
+#1752: Sum sq due to regression
+#1.70: Sum sq. due to errors
+```
+Out of the 7 labs, only 2 of them are statistically significant - Lab A (the intercept in the model), and lab F. Most of the Standard errors are greater than the coefficient estimates, other than the 2 significant Lab effects. The p-value of 0.0536 for the combined lab effects suggests that the lab effect is not significant overall (and there is no significant difference in the measurements between the Labs).
+
+(b) Are there any outliers in the data? Use standard diagnostics to determine which (if any) observations might be outliers, giving your reasons. Rerun the analysis without the suspected outliers and state any changes from your conclusions in (a). [3 points]
+```{r}
+plot(slr)
+#Omitting all potential outliers:
+slromit<-lm(Strength~factor(Lab),rr,subset=c(-1,-2,-37))
+summary(slromit)
+#Combined p-value changes dramatically from not significant (0.0536) to highly significant (0.005255); Interestingly Lab D has an even less significant p-value while the others increase more as compared to before.
+plot(slromit)
+#However, after plotting the dataset after omitting the potential 3 outliers, we now have 3 new outliers. 
+#Omitting just 1 (most influential) outlier:
+slromit1<-lm(Strength~factor(Lab),rr,subset=c(-1))
+summary(slromit1)
+#Overall lab effect becomes even more statistically significant with a p-value = 0.00072 and now Lab C and E are also significant now on top of Labs A & F. 
+plot(slromit1)
+#The Normal Q-Q plot looks  more normally distributed and this model looks to fit the data better than previously when omitting all 3 potential outliers. However, there are still 3 more outliers that  appear again after removal, and this normal Q-Q plot compared to the original slr model is not improved by that much.
+```
+Points 1, 2, and 37 appear to be potential outliers on the Residual v. Fitted & normal Q-Q plot (with Point 1 appearing most influential). However, after removing the potential outliers, there were more outliers that seemed to appear. This could  be due to the small sample size, and in this case it seems that removing the outliers that will just create more outliers so it is not satisfactory to keep removing them to create more. 
+The removal of one influential point caused a dramatic increase in the p-value, making the lab effect highly statistically significant. This dramatic change seemed problematic because it made some labs statistically significant when they were not before.
+Taking out this outlier that corresponds to Lab A's measurement would be removing a measurement that is far off from the other Labs, which would be benefit Lab A, and potentially make other deviations in measurements from other labs look larger. That is probably why the lab effect increased as well. 
+So, unless we are convinced that the datapoint is truly an error, it is not wise to remove any points, especially when we are trying to compare differences in the performance of the Labs with a small sample size. 
+
+(c) Now run this as a random effects regression using lme4, without removing the outlier. State the estimated standard deviations for both the Lab effect and the residual, and calculate a 95% confidence interval for each. [6 points]
+```{r}
+rr$Lab<-as.factor(rr$Lab)
+rer<-lmer(Strength~1+(1|Lab),rr)
+summary(rer)
+#95% confidence interval
+confint(rer)
+```
+The intercept is 86.99. The standard deviation for the Lab effect is 5.051, while the standard deviation for the residual is 11.144. The 95% confidence interval for the Lab effect (sig01) is 0 to 10.64. The 95% confidence interval for the residual effect (sigma squared epsilon) is 9.03 to 14.15 [effect due to error]. 
+
+(d) Draw a lattice plot to show the means and confidence intervals for the seven lab effects. [4 points]
+```{r}
+dotplot(ranef(rer,condVar=TRUE))
+```
+
+(e) Now run this as a Bayesian analysis using either STAN or INLA (your choice!). Fit a suitable model for a one-way analysis of variance, and show the following:
+  i. A plot of posterior densities for the Lab and Residual standard deviations; [3 points]
+  ii. A plot of posterior densities for the seven Lab effects; [3 points]
+  iii. A summary table of posterior distributions for the main parameters of the models. [4 points]
+  *CHP 12*
+```{r}
+#USING INLA.
+formula=Strength~f(Lab,model="iid")
+result=inla(formula,family="gaussian",data=rr)
+summary(result)
+#Intercept: 87.04
+#Precision for gaussian observation (sigma epsilon): 0.007
+#Posterior mean for sigma epsilon: (1/sqrt(0.007)) = 11.95
+#Precision for Lab (sigma alpha): 18600, posterior mean for sigma alpha is close to 0.. try hyperprior
+
+#Adding hyperprior
+sdres <- sd(rr$Strength)
+pcprior <- list(prec = list(prior="pc.prec", param = c(3*sdres,0.01)))
+formula <- Strength ~ f(Lab, model="iid", hyper = pcprior)
+result <- inla(formula, family="gaussian", data=rr)
+result <- inla.hyperpar(result)
+summary(result)
+#Precision for Gaussian Obs: 0.008
+#precision for lab: 6086.297 
+#posterior mean: 0.0128, not as close to 0 now
+
+#(i). A plot of posterior densities for the Lab and Residual standard deviations;
+sigmaalpha <- inla.tmarginal(function(x) 1/sqrt(exp(x)),result$internal.marginals.hyperpar[[2]])
+sigmaepsilon <- inla.tmarginal(function(x) 1/sqrt(exp(x)),result$internal.marginals.hyperpar[[1]])
+ddf <- data.frame(rbind(sigmaalpha,sigmaepsilon),errterm=gl(2,2048,labels = c("alpha","epsilon")))
+ggplot(ddf, aes(x,y, linetype=errterm))+geom_line()+xlab("Strength")+ylab("density")
+#alpha epsilon still somewhat stacked up at 0.
+
+#(ii). A plot of posterior densities for the 7 Lab effects
+rdf <- do.call(rbind.data.frame, result$marginals.random$Lab)
+rdf <- cbind(Lab=gl(7,nrow(rdf)/7,labels=letters[1:7]),rdf)
+ggplot(rdf, aes(x=x,y=y,linetype=Lab))+geom_line()+xlab("Strength")+ylab("density")
+#considerable overlap between densities; hard to distinguish between specific Labs.
+#Lab F  seems to vary more than the rest (also has the largest s.d. & mean)
+
+#(iii). A summary table of posterior distributions for the main parameters of the models.
+restab <- sapply(result$marginals.fixed, function(x) inla.zmarginal(x,silent=TRUE))
+restab <- cbind(restab, inla.zmarginal(sigmaalpha,silent=TRUE))
+restab <- cbind(restab, inla.zmarginal(sigmaepsilon,silent=TRUE))
+restab <- cbind(restab, sapply(result$marginals.random$Lab,function(x) inla.zmarginal(x, silent=TRUE)))
+colnames(restab) = c("mu","alpha","epsilon",levels(rr$Lab))
+data.frame(restab)
+restab
+#The standard deviations of the Lab effects are greater than their means..except for Lab F which has the largest mean and sd (compared to the other labs) 
+```
+In the density plot in (i), the density for sigma alpha is concentrated near 0. There is a considerable overall in the posterior densities for the 7 lab effects, although Lab F seems to vary more than the others with a higher mean and standard deviation. This is also exemplified in the summary table, which shows that means for the lab effects are smaller than their standard deviations. All of the lab effects (other than lab F) are also shown to have similar values on the summary table, confirming what we saw on the posterior density plot. This suggests that there are no difference in Lab effects.
+
+(f) Briefly compare your results from parts (c) and (e). What are the main similarities, and what are the main differences, between the two approaches? [3 points]
+
+*Results are close to those found by lme4 analysis (but not exact). Both of the analyses found the intercept to be close to 87 (86.99 and 87.04, respectively). However, the first regression analysis in (c) does not tell us that much about  how significant the lab effect is, and the difference between the strengths of each of the lab effects. Although we found that 0 is included in the lower bound of the confidence interval for the lab effect, with a pretty large confidence interval range, more information can be extracted using the INLA method. We further investigated the relationship between the lab effects, and found that most of the lab effects have similar means and standard deviations as well as  similar posterior densities. This allowed us to analyse the differences between lab effects in more detail. *
+
+(g) Now repeat parts (c) and (e) removing the outlier. There is no need to repeat every part of the analysis, but summarize the most important ways in which the analysis changes when the outlier is omitted. [4 points]
+
+```{r}
+rromit<- rr[c(-1),]
+reromit<-lmer(Strength~1+(1|Lab),rr,subset=c(-1))
+#Part (c) analysis:
+summary(reromit)
+confint(reromit)
+# The 95% confidence interval for the Lab effect is [2.84,12.78] and [6.96,11.04] for  the residual effect. 
+
+#Part (e) analysis:
+formula=Strength~f(Lab,model="iid")
+result=inla(formula,family="gaussian",data=rromit)
+summary(result)
+sdres <- sd(rromit$Strength)
+pcprior <- list(prec = list(prior="pc.prec", param = c(3*sdres,0.01)))
+formula <- Strength ~ f(Lab, model="iid", hyper = pcprior)
+result <- inla(formula, family="gaussian", data=rromit)
+result <- inla.hyperpar(result)
+summary(result)
+#Precision for Lab (sigma alpha): 0.336
+#Posterior density: 1.725
+
+#(i). A plot of posterior densities for the Lab and Residual standard deviations;
+sigmaalpha <- inla.tmarginal(function(x) 1/sqrt(exp(x)),result$internal.marginals.hyperpar[[2]])
+sigmaepsilon <- inla.tmarginal(function(x) 1/sqrt(exp(x)),result$internal.marginals.hyperpar[[1]])
+ddf <- data.frame(rbind(sigmaalpha,sigmaepsilon),errterm=gl(2,2048,labels = c("alpha","epsilon")))
+ggplot(ddf, aes(x,y, linetype=errterm))+geom_line()+xlab("Strength")+ylab("density")
+#sigma alpha is not as concentrated at 0.
+#(ii). A plot of posterior densities for the 7 Lab effects
+rdf <- do.call(rbind.data.frame, result$marginals.random$Lab)
+rdf <- cbind(Lab=gl(7,nrow(rdf)/7,labels=letters[1:7]),rdf)
+ggplot(rdf, aes(x=x,y=y,linetype=Lab))+geom_line()+xlab("Strength")+ylab("density")
+#Larger difference between the distributions, makes sense b/c the lab effects are significant in this model so the labs will have diff results.
+#(iii). A summary table of posterior distributions for the main parameters of the models.
+restab <- sapply(result$marginals.fixed, function(x) inla.zmarginal(x,silent=TRUE))
+restab <- cbind(restab, inla.zmarginal(sigmaalpha,silent=TRUE))
+restab <- cbind(restab, inla.zmarginal(sigmaepsilon,silent=TRUE))
+restab <- cbind(restab, sapply(result$marginals.random$Lab,function(x) inla.zmarginal(x, silent=TRUE)))
+colnames(restab) = c("mu","alpha","epsilon",levels(rromit$Lab))
+data.frame(restab)
+restab
+```
+The variance and standard deviation for the Lab effect increases from 25.51 and 5.05 to 45.63 and 6.76, respectively. For the Residual effect, the variance decreases from 124.19 to  74.27 and the standard deviation decreases from 11.14 to 8.62. Before removing the outlier, the 95% confidence interval for the Lab effect was [0,10.64] and [9.03,14.15] for the residual effect. After removing the outlier, the 95% confidence interval for the Lab effect is [2.84,12.78] and [6.96,11.04] for the residual effect. Both intervals are slightly more narrow than before omitting the outlier, especially for the Lab effect, which also no longer includes 0 in the interval.
+For part (i), the plot of posterior densities for the Lab and Residual standard deviations shifted closer together, with the alpha increasing by a lot and the epsilon distribution decreasing. Sigma alphas are less concentrated around 0 as compared to before as the mean increased to 1.73, which is much further from 0. Previously, the mean was much smaller (0.013). That also falls inline with the confidence interval no longer having 0 in the interval anymore. The summary table results also show that there is a larger difference in the lab effects than previously, especially with Lab F. These exemplify that removing the outlier makes the lab effect more significantly different from each other. 
+This is similar to what we found in part (b) when we used standard diagnostics to find  that removing the outlier would make the lab effect statistically significant. Although the two analyses came to two different conclusions, I believe that it would be beneficial to examine both (instead of just one or the other) to help compare the performance of the labs. The intial analyses helped determine which lab may be the worst performer, and after removing the worst performer, it can show the smaller discrepancies between the labs for a more precise comparison of the performances.
+
+##Question 2
+*Chp 10 & 11*
+2. Five varieties of barley were planted in six different fields over two years see Table 2.
+The data (in a form suitable for analysis in R) are contained within the file barley.csv.
+
+```{r}
+barley=read.csv('/Users/SylviaSzarka/Desktop/School/STOR 590/FINAL/barley.csv')
+```
+
+(a) Analyze the data as a fixed effects analysis of variance, treating "Yield" as the response. 
+Are each of the Variety, Field and Year effects statistically significant? 
+Are there significant interactions among any two of the three variables? 
+Briefly summarize your conclusions. [5 points]
+```{r}
+fmod<- aov(Yield~Variety+Field+Year+Variety*Field+Variety*Year,barley)
+summary(fmod)
+#Variety*Field p-value=0.789 & Variety*Year p-value=0.975 
+#-> Neither interction term is significant.
+```
+The field and year effects are statistically significant separately, but the Variety variable is not.
+There do not seem any significant interaction effects among any of the two variables, 
+as the p-value for Variety:Field interaction term is 0.789 and the p-value for 
+Variety:Year interaction term is 0.975. 
+The (Year*Variety) cannot be tested since both years the same variety of barley were planted. 
+Consequently, the three-way interactions cannot be tested. 
+
+(b) The experimenter is ultimately interested in differentiating different varieties of barley, 
+whereas the Field and Year influences are random. Therefore, we would like reanalyze the data treating 
+Variety as a fixed effect and the other two effects as random. Consider the following variants 
+on a random effects model:
+  i. Treat Year as a random effect and ignore Field;
+  ii. Treat both Year and Field as separate random effects;   
+  iii. Treat both Year and Field as random effects but with Year nested within Field.
+Fit each of these three models and briefly summarize the results. Explain, in words,
+the motivation for preferring either of models (ii) or (iii) over model (i)
+(no formal testing is required at this stage -- that comes later.) [6 points]
+```{r}
+op <- options(contrasts=c("contr.sum", "contr.poly"))
+options(op)
+#i. Year as a random effect and ignore Field;
+  mmod1<-lmer(Yield~Variety+(1|Year),barley)
+  summary(mmod1)
+#The estimate of variance components for the Year variable is 660 and the residual variance is 105. 
+  #The interclass correlation is 104.63/((104.63+659.70))=0.14. 
+  #Thus, 14% of the total variation is due to years. 
+  #The small interclass correlation suggests that Year factor is not a major source of variability in responses.
+
+#ii. Treat both Year and Field as separate random effects; 
+  mmod2<-lmer(Yield~Variety+(1|Year)+(1|Field),barley)
+  summary(mmod2)
+#The estimate of variance components for they Field effect is 395 & Year effect is 117 and Residual effect = 294. 
+  #The interclass correlation are 117/((117+294))=0.28 and 395/((395+294))=0.57 
+  #Thus, 28% and 57% of the total variation is due to years and plant variety.
+  
+#iii. Treat both Year and Field as random effects but with Year nested within Field.
+  mmod3<-lmer(Yield~Variety+(1|Field:Year),barley)
+  summary(mmod3)
+#The estimate of variance components for the Intercept is 546 and the residual variance is 171 
+  #The interclass correlation is 546/((171+546))=0.76 Thus, 76% of the total variation is due to year to year variation. 
+  #The large interclass correlation suggests that Year factor is a major source of variability in responses.
+```
+  I would prefer the nested model (iii) over (i) and (ii), since it explains variability within the response
+  Yield the best (it has the smallest Mean Square Error (MSE) term.  
+  In that model, the Field:Year random effect is much larger than the residual, 
+  so it is useful to keep that in the model. 
+  It has the smallest residual variance compared to the other models as well. 
+  Intuitively, using a nesting makes sense, since crop yields are depend on weather. 
+  The yearly weather pattern has no relationship in previous years.  
+  
+(c) For each of models (i), (ii), (iii), refit the model without Variety and perform a Kenward-Roger
+test for significance of the Variety effect. Why do the three models not all give the same answer? [5 points]
+```{r}
+#i. Year as a random effect and ignore Field;
+mmodi<-lmer(Yield~1+(1|Year),barley)
+#testing for Variety effect:
+KRmodcomp(mmod1,mmodi)
+#ii. Treat both Year and Field as separate random effects;
+mmodii<-lmer(Yield~1+(1|Year)+(1|Field),barley)
+KRmodcomp(mmod2,mmodii)
+
+#iii. Treat both Year and Field as random effects but with Year nested within Field.
+mmodiii<-lmer(Yield~1+(1|Field:Year),barley)
+KRmodcomp(mmod3,mmodiii)
+
+```
+In part (i), the Variety effect is not significant with a p-value of 0.106. 
+In part (ii), the Variety effect is quite significant with a p-value of 0.0035. 
+The KR test in part (iii) also produced a highly significant p-value, suggesting
+that the Variety effect is significant for that model.
+They most likely give different answers because part (i) completely ignores the Field effect,
+which might have an effect on the significance of the Variety effect. 
+Additionally, In model (i), the MSE is relatively large compared to the other models, 
+producing an F-ratio that suggests that the fixed effect of Variety is not significant in that model. 
+
+(d) Now conduct a formal test of model (i) against model (ii) against model (iii) using either
+a parametric bootstrap or the exactRLRT procedure. 
+After conducting these tests, which of the three models do you prefer? [6 points]
+```{r}
+exactRLRT(mmod2,mmod3,mmod1)
+#p-value = 1e-04
+exactRLRT(mmod1,mmod3,mmod2)
+#p-value < 2.2e-16
+#mmod2 alternative
+exactRLRT(mmod3,mmod2,mmod1)
+#p-value < 2.2e-16
+#computing the Likelikhood ratio both with and without the term you want to drop. 
+#in bootstrap standard lrt is based on the chi=sq
+PBmodcomp(mmod1,mmod3)
+#P-value of 1 -> this method not designed for the situation  
+```
+You cannot use PBmodcomp to test for a single random effect (got a p-value of 1) but exactRLRT 
+is designed for this situation, and we get a very significant p-value of 2.2e-16, 
+confirming that the random effect of the nested term  (Field:Year) is significant 
+and we should keep it in our model; justifying our choice of model (iii) in part (b) as well.
+However, it does not work when testing the second model because it has 2 random effects (not just 1). 
+
+(e) Using model (iii) including the Variety effect, carry out some suitable diagnostic procedures
+to determine whether the model fits the data. Summarise your conclusions. [5 points]
+```{r}
+dd<-fortify.merMod(mmod3)
+dd
+#ggplot(dd,aes(sample=.resid))+stat_qq()
+qqnorm(residuals(mmod3))
+plot(fitted(mmod3),residuals(mmod3),xlab="fitted",ylab="residuals")
+abline(h=0)
+```
+The model does seem to fit the data well according to the Normal Q-Q plot which 
+seems relatively normal with no glaring outliers. 
+The Residual vs. Fitted plot also looks to be normally distributed with maybe a slight 
+inconstant variance towards the right hand side of the plot.
+
+(f) From the raw data, it looks as though Trebi is the best variety (in the sense of maximizing expected yield) 
+and Field 2 is the best field. For the next year's crop, suppose we plant Trebi in either (i) Field 2,
+or (ii) some randomly chosen new field. For each of (i) and (ii),give a point prediction and
+a 95% prediction interval for the yield of the new crop. Assume model (iii) from part (b). [6 points]
+
+```{r}
+#Fixed Effect = 118.1
+  fixef(mmod3)
+  #Random effect:
+  ranef(mmod3)
+  #(i). Field 2
+predict(mmod3, newdata=data.frame(Year='2010',Field ='2',Variety='Trebi'))
+predict(mmod3, newdata=data.frame(Year='2011',Field ='2',Variety='Trebi'))
+
+  #prediction interval:
+predict(mmod3, newdata=data.frame(Year='2011',Field ='2',Variety='Trebi'), 
+        interval='prediction', allow.new.levels=TRUE)
+#
+# Parametric bootstrap method for computing 95% prediction intervals for
+#                          Field=2   Year=2010
+
+group.sd <- as.data.frame(VarCorr(mmod3))$sdcor[1]
+resid.sd <- as.data.frame(VarCorr(mmod3))$sdcor[2]
+pv <- numeric(1000)
+for(i in 1:1000){
+  y <- unlist(simulate(mmod3, use.u=TRUE))
+  bmod <- suppressMessages(refit(mmod3, y))
+  pv[i] <- predict(bmod, newdata=data.frame(Year='2010',Field ='2',Variety='Trebi')) 
+  + rnorm(n=1,sd=group.sd) 
+  + rnorm(n=1,sd=resid.sd)
+  }
+quantile(pv, c(0.025, 0.975))
+#    2.5%    97.5%
+# 111.7868 216.5640
+# Parametric bootstrap method for computing 95% prediction intervals for
+#                          Field=2   Year=2011
+group.sd <- as.data.frame(VarCorr(mmod3))$sdcor[1]
+resid.sd <- as.data.frame(VarCorr(mmod3))$sdcor[2]
+pv <- numeric(1000)
+for(i in 1:1000){
+  y <- unlist(simulate(mmod3, use.u=TRUE))
+  bmod <- suppressMessages(refit(mmod3, y))
+  pv[i] <- predict(bmod, newdata=data.frame(Year='2011',Field ='2',Variety='Trebi'))+
+    rnorm(n=1,sd=group.sd) 
+  + rnorm(n=1,sd=resid.sd)
+  }
+quantile(pv, c(0.025, 0.975))
+
+##(ii).
+# Prediction for a new randomly chosen field:
+predict(mmod3,re.form=~0)[1]
+# 94.39167
+#
+# Parametric bootstrap method for computing 95% prediction intervals
+# a new RANDOMLY chosen field:
+
+group.sd <- as.data.frame(VarCorr(mmod3))$sdcor[1]
+resid.sd <- as.data.frame(VarCorr(mmod3))$sdcor[2]
+pv <- numeric(1000)
+for(i in 1:1000){
+  y <- unlist(simulate(mmod3))
+  bmod <- suppressMessages(refit(mmod3, y))
+  pv[i] <- predict(bmod, re.form=~0)[1] + rnorm(n=1,sd=group.sd) + rnorm(n=1,sd=resid.sd)
+  }
+quantile(pv, c(0.025, 0.975))
+#     2.5%     97.5%
+# 37.69605 153.77165
+```
+
+(i). The point estimate for the prediction of the Yield for a crop of Variety type "Trebi" in Field 2 
+will be 133 for the year 2011 and AND 169 for year 2010. The average prediction from the 2 years is 151. 
+The prediction interval is [111.79,216.56]. 
+(ii). For a RANDOMLY chosen field, the prediction point estimate is 94.39. The prediction interval is [37.69,153.77].
+
+
+##Question 3:
+##*Chp 13*
+3. A study was conducted in which 167 mothers with children were asked to provide demographic and personal information and then followed up for 28 days each. On each day, the mother was assessed for stress and a binary variable stress (0 for low stress. 1 for high stress) was recorded. The covariates involved in the study were:
+  id = mother-child id
+  day = study day t=(1,2,...,28)
+  stress = maternal stress at day(t): 1=yes, 0=no
+  married = marital status: 1=married, 0=other
+  education = highest educational level: 1=less than high school, 2=some high school, 3=high school graduate, 4=some college, 5=college graduate
+  employed = employment status: 1=employed, 0=unemployed
+  chlth = child health status at baseline: 1=very poor,2=poor,3=fair,4=good,5=very good
+  mhlth = mother health status at baseline: 1=very poor,2=poor,3=fair,4=good,5=very good
+  race = child race: 1=non-white, 0=white
+  csex = child gender: 1=male, 2=female
+  housize = size of household:  1=more than 3 people, 0=2-3 people
+```{r}
+stress=read.csv('/Users/SylviaSzarka/Desktop/School/STOR 590/FINAL/stress.csv')
+```
+(a) Construct a plot in which "mean stress level" is plotted against "day," averaging over individuals, with employed and unemployed mothers shown with different plotting symbols on the same plot. Also fit a straight line to the plot, separately for employed and unemployed mothers. You should observe that both groups show decreased stress levels over time, but that the relationship is not the same for the employed and unemployed mothers. Describe the relationships. [7 points]
+```{r}
+#summary(stress)
+#33 NA values in stress..omitting the values
+stress1<-na.omit(stress)
+#Check: Does mother employed status change? -> No. 
+length(unique(stress$id))
+nrow(unique(stress[,c('id','employed')]))
+
+#Mean stress level per day broken down by unemployed vs. employed:
+stress1 %>%
+  group_by(employed,day) %>%
+  summarize(meanstress=mean(stress)) %>%
+  xtabs(formula=meanstress~day+employed)
+
+#Grouping
+df <- stress1 %>% 
+    group_by(day,employed) %>% 
+    summarise(meanstress = mean(stress), emp=mean(employed))
+df$employed <- ifelse(df$employed == 1, "Employed", "Unemployed")
+#Averaging based on mean stress levels over the 28 days for unemployed & employed separately
+ggplot(df,aes(x=day,y=meanstress,shape=employed,color=employed)) +geom_point()+geom_line()
+ggplot(df,aes(x=day,y=meanstress,shape=employed,color=employed)) +geom_point()+geom_smooth(method="lm")
+ggplot(df,aes(x=day,y=meanstress,shape=employed,color=employed))+geom_point()+geom_smooth()+facet_wrap(~employed)
+
+```
+Both of the plots shows that both groups show decreased stress levels over time. The fitted lines in the second plot show that for unemployed mothers, the stress level starts pretty high but then sharply decreases mid-month, making the slope for that group a lot larger. The employed mothers have a much smaller slope, showing a more steady decline in stress over the 28-day period.
+
+(b) The other variables in the analysis are likely to be correlated with the mother's employment status, and therefore could be confounders to the relationship you observed in (a). With this in mind, fit a GLMM to the whole of the data, including all of day, married, factor(education), employed, factor(chlth), factor(mhlth), race, csex and housize as covariates, but also including a day:employed interaction term. Do this using:
+  i. PQL method,
+  ii. glmer method,
+  iii.GEE method with corstr='ar1'
+  iv. GEE method with corstr='exchangeable'
+Compare these methods, with particular focus on the statistical significance of the *day:employed* interaction term. Which method or methods do you think work best for this problem? [12 points]
+*ctsib example* 
+```{r}
+#i. PQL method:
+modpql1=glmmPQL(stress~I(day*employed)+day+married+factor(education)+employed+factor(chlth)+factor(mhlth)+race+csex+housize,random=~1|id,family=binomial,data=stress1)
+  summary(modpql1)
+  #(day*employed) interaction significant - p-value of 0.0038
+  #difficult to interpret w/ all the levels for the variables
+
+#Try without factoring variables (easier to interpret)
+modpql2=glmmPQL(stress~I(day*employed)+day+married+education+employed+chlth+mhlth+race+csex+housize,random=~1|id,family=binomial,data=stress1)
+  summary(modpql2)
+  #(day*employed) interaction still significant w/ same pvalue as before
+
+#ii. glmer method* *UNABLE TO ADD OTHER VARIABLES*
+  #Uses standard likelihood based methods to construct a chi-squared test --> view w/ skepticism bc of the shortcomings/failures of chi-square approximations.
+    #a) Using default
+    modgha=glmer(stress~day+married+I(day*employed)+(1+day|id),family=binomial,data=stress1)
+    summary(modgha)
+      #as soon as I added in employed, race, csex, housize, or any factored variables it said: "Model failed to converge with max|grad| = 0.0723041 (tol = 0.002, component 1) & also said Model is nearly unidentifiable."
+    #b) Gauss-Hermite Approach:
+    modghb=glmer(stress~day+married+I(day*employed)+(1|id),nAGQ=25,family=binomial,data=stress1)
+    summary(modghb)
+    #dropping subject specific effects:
+    modghc=glmer(stress~day+married+(1|id),nAGQ=25,family=binomial,data=stress1)
+    anova(modghb,modghc)
+    #Using anova to compare with and without interaction --> significant p-value suggests that interaction term IS significant
+#Do we need to consider changing the factor variables with multiple levels to just binary?
+#iii. GEE method with corstr='ar1'
+modgeep1=geeglm(stress~day+married+factor(education)+employed+factor(chlth)+factor(mhlth)+race+csex+housize+I(day*employed),id=id,corstr='ar1',scale.fix=T,data=stress1,family=binomial)
+  summary(modgeep1)
+  #(day*employed) interaction technically significant but not highly significant; pval=0.046 
+
+#iv. GEE method with corstr='exchangeable'
+modgeep2=geeglm(stress~day+married+factor(education)+employed+factor(chlth)+factor(mhlth)+race+csex+housize+I(day*employed),id=id,corstr='exchangeable',scale.fix=T,data=stress1,family=binomial)
+  summary(modgeep2)
+  #(day*employed) interaction significant with p-value = 0.033 
+  #but is difficult to interpret b/c of the multiple levels of all of the factors.
+
+```
+When attempting to use the glmer method in (ii) on all of the variables, an error message was produced with the warning "Model failed to converge..Model is nearly unidentifiable." This could be due to the difficulty with most of the scores being reduced to binary responses, causing a lack of variability in the data to fit all the other effects simultaneously. That also makes it difficult (or impossible) to compare to the other variables that have multiple levels (0,1,2,...5). Dropping subject specific effects helped to make the model more understandable, as we wanted to know more about the variability in the population, not just the individuals. The first and last model gave similar results & a similar p-value for the interaction term, so it provides some solace in  level of consistency. The first model however, had a more difficult time interpreting the factored variables and the GEE model handled these much better with a more simple and understandable output; thus we choose the last GEE method with corstr='exchangeable' in (iv). 
+
+
+(c) For your preferred method in (b), investigate whether any of the terms may be dropped from the model, and whether they affect the day:employed interaction. Which model do you choose overall as best? [10 points]
+```{r}
+summary(modgeep2)
+#Drop least significant first - csex:
+modgeep3=geeglm(stress~day+married+employed+factor(education)+factor(chlth)+factor(mhlth)+race+housize+I(day*employed),id=id,corstr='exchangeable',scale.fix=T,data=stress1,family=binomial)
+summary(modgeep3)
+#Interaction term still the same
+
+#Try dropping Education next
+modgeep4=geeglm(stress~day+married+employed+factor(chlth)+factor(mhlth)+race+housize+I(day*employed),id=id,corstr='exchangeable',scale.fix=T,data=stress1,family=binomial)
+summary(modgeep4)
+
+#drop race
+modgeep5=geeglm(stress~day+married+employed+factor(chlth)+factor(mhlth)+housize+I(day*employed),id=id,corstr='exchangeable',scale.fix=T,data=stress1,family=binomial)
+summary(modgeep5)
+#Interaction term p-value increases slightly, still sig though
+
+#drop employed
+modgeep6=geeglm(stress~day+married+factor(chlth)+factor(mhlth)+housize+I(day*employed),id=id,corstr='exchangeable',scale.fix=T,data=stress1,family=binomial)
+summary(modgeep6)
+#Interaction term no longer significant
+#All factors except for day*employed interaction are significant now..
+
+
+#investigate what happens if we drop the interaction? 
+modgeep7=geeglm(stress~day+married+factor(chlth)+factor(mhlth)+housize,id=id,corstr='exchangeable',scale.fix=T,data=stress1,family=binomial)
+summary(modgeep7)
+anova(modgeep7,modgeep6)
+```
+As suggested by Faraway, it is not suggested to base all of our inferences entirely on the glmmPQL method, as it is based on the linearized model with rather dubious assumptions, which means the results cannot be relied upon. Faraway also notes that the Bernoulli response may lead to biased estimates of regression coefficients as well when using the first method in (i). Although we initially assumed that the Gauss-Hermite approximation would be the best approach because of the accuracy, we saw that that model did not converge correctly, so we do not want to use that. We assume that the observations from the same subject (id) are going to have the same correlation. We choose GEE model based on the consistency as well as the fact that we are trying to model the data on population level. We choose the GEE model beecause The estimates for a GEE represent the effect of the predictors averaged across all individuals with the same predictor values. GEEs do not use random effects but model the correlation at the marginal or correlation level, so that is why it is the best model to use as compared to the other models. In the end, after dropping multiple variables, we also found that the interaction*day term is not significant and can be considered to be dropped.
+
+
+(d) State, in words, a summary of your conclusions. In particular, comment on whether the pattern of stress are different in employed compared with unemployed mothers, and how your conclusions may be affected by the other variables in the analysis. [5 points]
+Before dropping subject specific effects in the GEE model, our day*employed term was significant at p=0.033. However, after taking these variables out and just examining the model on a population level, There does not seem to be a large difference in employed and unemployed mothers' stress levels, as exemplified after dropping certain variables. This is most likely due to the difference after dropping most of the subject specific effects.
+
+
+
